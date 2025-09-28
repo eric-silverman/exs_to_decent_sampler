@@ -26,7 +26,8 @@ Usage
   python3 exs_to_decent_sampler.py /path/to/EXS_folder [--out /path/to/output]
 
 Output
-  <out>/DS/<instrument_name>.dsbundle/
+  By default (no --out), bundles are written under:
+  <CWD>/Decent Sampler Bundes/<instrument_name>.dsbundle/
     - <instrument_name>.dspreset
     - Samples/<copied sample files>
     - Resources/bg.png (generated gradient background)
@@ -1041,7 +1042,7 @@ def file_content_equal(a: Path, b: Path) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description='Convert EXS24 instrument to DecentSampler bundle')
     parser.add_argument('input_folder', type=str, help='Folder containing .exs instrument and samples')
-    parser.add_argument('--out', type=str, default=None, help='Base output folder (defaults to input folder). Bundles are written under <out>/DS/.')
+    parser.add_argument('--out', type=str, default=None, help='Output folder root (default: <CWD>/Decent Sampler Bundes). Bundles are written directly under this folder.')
     parser.add_argument('--exs', type=str, default=None, help='Specific .exs file to convert (optional)')
     parser.add_argument('--force-ui', action='store_true', help='Add a minimal <ui> section explicitly')
     parser.add_argument('--full-ui', action='store_true', help='Add a full <ui> with knobs bound to effects and a title label')
@@ -1079,10 +1080,10 @@ def main() -> int:
             print("No .exs file found in folder. Use --exs to specify one.", file=sys.stderr)
             return 2
 
-    # Determine base output root. We always place results into a "DS" subfolder
-    # under this root to keep conversions organized.
-    base_out = Path(args.out).expanduser().resolve() if args.out else in_dir
-    out_root = base_out / 'DS'
+    # Determine base output root. Default to current working directory
+    # inside a folder named "Decent Sampler Bundes" unless --out is provided.
+    base_out = Path(args.out).expanduser().resolve() if args.out else (Path.cwd() / 'Decent Sampler Bundes')
+    out_root = base_out
     instr_name = guess_instrument_name(exs_path)
     bundle_dir = out_root / f"{instr_name}.dsbundle"
     samples_dir = bundle_dir / 'Samples'

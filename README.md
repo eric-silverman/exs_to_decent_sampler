@@ -8,7 +8,7 @@ This script parses EXS instruments (XML or binary plist), copies referenced samp
 
 - Parses EXS24 instruments and extracts zones: keys, velocities, root note, tuning, volume, pan, loops, loop crossfade.
 - Copies samples and builds a DecentSampler bundle structure:
-  - `<out>/DS/<InstrumentName>.dsbundle/`
+  - `<CWD>/Decent Sampler Bundes/<InstrumentName>.dsbundle/` (by default)
     - `<InstrumentName>.dspreset`
     - `Samples/…`
 - Generates a `.dspreset` targeting DecentSampler (minVersion 1.6.0) with a default envelope and optional UI.
@@ -25,13 +25,13 @@ This script parses EXS instruments (XML or binary plist), copies referenced samp
 
 ## Usage
 
-Basic conversion (writes output next to input):
+Basic conversion (writes output under `<CWD>/Decent Sampler Bundes`):
 
 ```
 python3 exs_to_decent_sampler.py /path/to/EXS_folder
 ```
 
-Control output location (results go under `<out>/DS/`):
+Control output location (results go directly under `<out>`):
 
 ```
 python3 exs_to_decent_sampler.py /path/to/EXS_folder --out /path/to/output
@@ -72,7 +72,7 @@ python3 exs_to_decent_sampler.py /path/to/EXS_folder --xfade-ms 20
 ### Command line options
 
 - `input_folder` (positional): Folder containing the `.exs` file and samples.
-- `--out <path>`: Base output folder. Results are placed under `<out>/DS/`.
+- `--out <path>`: Output folder root. Default is `<CWD>/Decent Sampler Bundes`. Results are placed directly under `<out>`.
 - `--exs <path>`: Specific `.exs` file to convert (optional).
 - `--force-ui`: Add a minimal `<ui>` block explicitly.
 - `--full-ui`: Add a full UI with knobs bound to ADSR, Gain, and Tone.
@@ -85,7 +85,7 @@ python3 exs_to_decent_sampler.py /path/to/EXS_folder --xfade-ms 20
 The script creates a DecentSampler bundle:
 
 ```
-<out>/DS/<InstrumentName>.dsbundle/
+<out or CWD>/Decent Sampler Bundes/<InstrumentName>.dsbundle/
   ├─ <InstrumentName>.dspreset
   └─ Samples/
       └─ <copied sample files>
@@ -121,7 +121,10 @@ python3 exs_to_decent_sampler.py "~/Logic/EXS/GrandPiano" \
   --full-ui \
   --xfade-ms 15
 
-# Output: ~/Instruments/DS/GrandPiano.dsbundle/
+# Default output (no --out):
+#   <CWD>/Decent Sampler Bundes/GrandPiano.dsbundle/
+# With --out "~/Instruments":
+#   ~/Instruments/GrandPiano.dsbundle/
 #         ├─ GrandPiano.dspreset
 #         └─ Samples/…
 ```
