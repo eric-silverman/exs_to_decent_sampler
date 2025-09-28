@@ -29,11 +29,13 @@ Output
   <out>/DS/<instrument_name>.dsbundle/
     - <instrument_name>.dspreset
     - Samples/<copied sample files>
+    - Resources/bg.png (generated gradient background)
 
 Limitations
 - UI: DecentSampler shows a full standard UI if no custom <ui> is provided.
-  This script intentionally relies on that for maximum compatibility. If you
-  want custom UI controls hooked to effects, that can be added in a follow-up.
+  This script provides a minimal custom UI with a gradient background and a
+  large, centered title label. If you want additional controls or styling, that
+  can be added in a follow-up.
 
 - Loop crossfades: EXS loop crossfade values are not available when EXS parsing
   fails and we fall back to filename/AIFF parsing. In those cases, use
@@ -66,6 +68,118 @@ def warn(msg: str) -> None:
 
 def info(msg: str) -> None:
     print(f"[INFO] {msg}")
+
+
+def generate_background(bundle_dir: Path, title: str, theme: str, width: int, height: int) -> Optional[str]:
+    """Generate a vertical gradient background PNG with a large top-centered title.
+
+    - theme: 'light' or 'dark' to choose palette.
+    Returns a relative path (inside the bundle) if successful, else None.
+    Requires Pillow. If unavailable, returns None.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    except Exception:
+        warn("Pillow not installed; skipping gradient background generation.")
+        return None
+
+    res_dir = bundle_dir / 'Resources'
+    res_dir.mkdir(parents=True, exist_ok=True)
+    bg_path = res_dir / 'bg.png'
+
+    # Gradient background
+    img = Image.new('RGB', (width, height), '#3b3f44')
+    if (theme or '').lower() == 'light':
+        top = (235, 238, 242)
+        bottom = (206, 211, 219)
+    else:
+        top = (55, 58, 62)
+        bottom = (30, 32, 35)
+    draw = ImageDraw.Draw(img)
+    for y in range(height):
+        t = y / max(1, height - 1)
+        r = int(top[0] * (1 - t) + bottom[0] * t)
+        g = int(top[1] * (1 - t) + bottom[1] * t)
+        b = int(top[2] * (1 - t) + bottom[2] * t)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    # Render large title near the top center
+    text = title
+    # Heuristic font size relative to canvas width
+    # Title size reduced by ~50% from previous
+    size = max(36, min(90, width // 20))
+    try:
+        from PIL import ImageFont
+        # Try a common font first; fallback to default if unavailable
+        try:
+            font = ImageFont.truetype("Arial.ttf", size)
+        except Exception:
+            font = ImageFont.load_default()
+    except Exception:
+        font = None  # type: ignore
+    if font is not None:
+        # Measure text size
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            try:
+                tw, th = draw.textsize(text, font=font)
+            except Exception:
+                tw, th = (len(text) * max(8, size // 2), size)
+        tx = (width - tw) // 2
+        ty = max(10, 20)
+        shadow = (0, 0, 0, 140)
+        fg = (20, 23, 27) if (theme or '').lower() == 'light' else (236, 240, 245)
+        # Soft shadow for contrast
+        draw.text((tx+2, ty+2), text, font=font, fill=shadow)
+        draw.text((tx, ty), text, font=font, fill=fg)
+
+    # Draw knob labels into the background with theme-aware color
+    names = ['Gain', 'Attack', 'Decay', 'Sustain', 'Release', 'Tone']
+    label_color = (32, 36, 40) if (theme or '').lower() == 'light' else (220, 225, 232)
+    # Layout mirrors ds_add_full_ui
+    n = 6
+    k_w = 160
+    margin = 50
+    if width <= (n * k_w + 2 * margin):
+        spacing = 10
+        x0 = margin
+    else:
+        spacing = (width - 2 * margin - n * k_w) // (n - 1)
+        x0 = margin
+    # Place labels even closer to the knobs
+    # Keep labels aligned with knobs: knob top y is set in ds_add_full_ui
+    knob_top_y = 100
+    y_label = knob_top_y - 4
+    try:
+        lbl_font = ImageFont.truetype("Arial.ttf", 22)
+    except Exception:
+        lbl_font = ImageFont.load_default()
+    for i, name in enumerate(names):
+        x = x0 + i * (k_w + spacing)
+        center_x = x + k_w // 2
+        try:
+            bbox = draw.textbbox((0, 0), name, font=lbl_font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            try:
+                tw, th = draw.textsize(name, font=lbl_font)
+            except Exception:
+                tw, th = (len(name) * 8, 18)
+        tx = int(center_x - tw / 2)
+        # subtle shadow for contrast
+        draw.text((tx+1, y_label+1), name, font=lbl_font, fill=(0,0,0))
+        draw.text((tx, y_label), name, font=lbl_font, fill=label_color)
+
+    # Save PNG
+    if img.mode not in ('RGB', 'RGBA'):
+        img = img.convert('RGB')
+    img.save(bg_path, 'PNG')
+    return 'Resources/bg.png'
+
+
+# External background downloads removed; always generate local gradient.
 
 
 def guess_instrument_name(exs_path: Path) -> str:
@@ -725,28 +839,35 @@ def ds_add_all_effects(root: ET.Element) -> None:
     })
 
 
-def ds_add_full_ui(root: ET.Element) -> None:
-    """Minimal UI: ADSR + Tone.
+def ds_add_full_ui(root: ET.Element, title: str, theme: str = 'dark', bg_rel_path: Optional[str] = None, bg_w: int = 1100, bg_h: int = 420) -> None:
+    """Minimal UI: Background gradient + Title label + ADSR + Tone.
 
     - Attack/Decay/Sustain/Release are bound to group 0's envelope.
     - Tone controls global lowpass cutoff (svf1 cutoff).
+    - A large label is pinned to the top center with the instrument name.
     """
     ui = ET.SubElement(root, 'ui')
     ui.set('width', '1100')
     ui.set('height', '420')
 
     tab_main = ET.SubElement(ui, 'tab', {'name': 'Main'})
+    # Optional background image (gradient with embedded title)
+    if bg_rel_path:
+        ET.SubElement(tab_main, 'image', {
+            'x': '0', 'y': '0', 'width': str(bg_w), 'height': str(bg_h),
+            'path': bg_rel_path,
+        })
+    canvas_w = int(ui.get('width'))
 
     def knob(x: int, y: int, label: str, min_v: str, max_v: str, value: str) -> ET.Element:
-        # Use labeled-knob for consistent labeling + value display
+        # Use labeled-knob for consistent rendering; hide internal label (drawn in background)
         return ET.SubElement(tab_main, 'labeled-knob', {
             'x': str(x), 'y': str(y), 'width': '160', 'height': '160',
-            'label': label, 'type': 'float',
+            'label': '', 'type': 'float',
             'minValue': min_v, 'maxValue': max_v, 'value': value,
         })
 
     # Center six knobs evenly across the canvas
-    canvas_w = int(ui.get('width'))
     n = 6
     k_w = 160
     margin = 50
@@ -756,14 +877,15 @@ def ds_add_full_ui(root: ET.Element) -> None:
     else:
         spacing = (canvas_w - 2 * margin - n * k_w) // (n - 1)
         x0 = margin
-    y = 80
+    # Move knobs slightly down
+    y = 100
     x_positions = [x0 + i * (k_w + spacing) for i in range(n)]
 
-    # Gain first as dB labeled knob (-18..+18 dB), centered at 0 dB
+    # Gain first as dB knob (-18..+18 dB), centered at 0 dB
     gain_ctl = ET.SubElement(tab_main, 'labeled-knob', {
         'x': str(x_positions[0]), 'y': str(y),
         'width': '160', 'height': '160',
-        'label': 'Gain', 'type': 'float',
+        'label': '', 'type': 'float',
         'minValue': '-18', 'maxValue': '18', 'value': '0'
     })
     # Wider ADSR sweeps for more range
@@ -922,7 +1044,7 @@ def main() -> int:
     parser.add_argument('--out', type=str, default=None, help='Base output folder (defaults to input folder). Bundles are written under <out>/DS/.')
     parser.add_argument('--exs', type=str, default=None, help='Specific .exs file to convert (optional)')
     parser.add_argument('--force-ui', action='store_true', help='Add a minimal <ui> section explicitly')
-    parser.add_argument('--full-ui', action='store_true', help='Add a full <ui> with knobs bound to effects')
+    parser.add_argument('--full-ui', action='store_true', help='Add a full <ui> with knobs bound to effects and a title label')
     parser.add_argument('--samples-root', type=str, default=None,
                         help='Optional folder to search recursively for samples when EXS/SFZ parsing fails. '
                              'When provided, the script will look for files whose names begin with '
@@ -931,6 +1053,10 @@ def main() -> int:
                         help='Default loop crossfade length (in samples) applied to zones that have loopStart/loopEnd but no crossfade.')
     parser.add_argument('--xfade-ms', type=float, default=None,
                         help='Default loop crossfade length (in milliseconds) applied to zones without a crossfade. Converted per-sample using its sample rate (defaults to 44100 Hz if unknown).')
+    parser.add_argument('--theme', type=str, choices=['light', 'dark'], default=None,
+                        help='UI theme for gradient background and label color. Default: dark.')
+    parser.add_argument('--bg-width', type=int, default=1100, help='Background width in pixels (default: 1100).')
+    parser.add_argument('--bg-height', type=int, default=420, help='Background height in pixels (default: 420).')
     args = parser.parse_args()
 
     in_dir = Path(args.input_folder).expanduser().resolve()
@@ -1022,9 +1148,20 @@ def main() -> int:
     ds_add_groups(root, zones, samples_subdir='Samples')
     # Add effects with IDs so UI knobs can bind reliably.
     ds_add_all_effects(root)
-    # Add UI if requested
+
+    # Generate a simple gradient background (always), themed if requested
+    theme = (args.theme or 'dark')
+    bg_rel: Optional[str] = None
+    try:
+        bg_rel = generate_background(bundle_dir, instr_name, theme, args.bg_width, args.bg_height)
+        if bg_rel:
+            info(f"Background generated: {bg_rel}")
+    except Exception as e:
+        warn(f"Background generation failed: {e}")
+
+    # Add UI
     if args.full_ui:
-        ds_add_full_ui(root)
+        ds_add_full_ui(root, title=instr_name, theme=theme, bg_rel_path=bg_rel, bg_w=args.bg_width, bg_h=args.bg_height)
     elif args.force_ui:
         ds_add_basic_ui(root)
     write_preset(root, preset_path)
