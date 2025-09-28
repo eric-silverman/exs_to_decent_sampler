@@ -1,0 +1,3 @@
+# High-level, human-edited dependencies (for pip-tools users)
+Pillow==11.3.0
+

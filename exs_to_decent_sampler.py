@@ -81,7 +81,7 @@ def generate_background(bundle_dir: Path, title: str, theme: str, width: int, he
     try:
         from PIL import Image, ImageDraw, ImageFont, ImageFilter
     except Exception:
-        warn("Pillow not installed; skipping gradient background generation.")
+        warn("Pillow not installed; skipping gradient background generation. Install with: 'python3 -m pip install --user pillow' (or 'pip install pillow').")
         return None
 
     res_dir = bundle_dir / 'Resources'
@@ -1041,9 +1041,11 @@ def file_content_equal(a: Path, b: Path) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Convert EXS24 instrument to DecentSampler bundle')
-    parser.add_argument('input_folder', type=str, help='Folder containing .exs instrument and samples')
+    parser.add_argument('--check-deps', action='store_true', help='Check optional dependencies (Pillow) and exit')
+    parser.add_argument('input_folder', type=str, nargs='?', help='Folder containing .exs instrument and samples')
     parser.add_argument('--out', type=str, default=None, help='Output folder root (default: <CWD>/Decent Sampler Bundes). Bundles are written directly under this folder.')
     parser.add_argument('--exs', type=str, default=None, help='Specific .exs file to convert (optional)')
+    parser.add_argument('--batch', action='store_true', help='Convert all .exs files in the input folder (non-recursive)')
     parser.add_argument('--force-ui', action='store_true', help='Add a minimal <ui> section explicitly')
     parser.add_argument('--full-ui', action='store_true', help='Add a full <ui> with knobs bound to effects and a title label')
     parser.add_argument('--samples-root', type=str, default=None,
@@ -1060,11 +1062,145 @@ def main() -> int:
     parser.add_argument('--bg-height', type=int, default=420, help='Background height in pixels (default: 420).')
     args = parser.parse_args()
 
+    # Dependency check mode: no input folder required
+    if args.check_deps:
+        rc = 0
+        try:
+            import PIL  # type: ignore
+            try:
+                import PIL.Image  # type: ignore
+            except Exception:
+                pass
+            print("Pillow: OK")
+        except Exception:
+            print("Pillow: MISSING — install with 'python3 -m pip install --user pillow' or 'pip install pillow'")
+            rc = 1
+        return rc
+
+    if not args.input_folder:
+        print("input_folder is required (or pass --check-deps)", file=sys.stderr)
+        return 2
+
     in_dir = Path(args.input_folder).expanduser().resolve()
     if not in_dir.is_dir():
         print(f"Input folder not found: {in_dir}", file=sys.stderr)
         return 2
 
+    # Determine base output root. Default to current working directory
+    # inside a folder named "Decent Sampler Bundes" unless --out is provided.
+    base_out = Path(args.out).expanduser().resolve() if args.out else (Path.cwd() / 'Decent Sampler Bundes')
+
+    def convert_one(exs_path: Path) -> int:
+        out_root = base_out
+        instr_name = guess_instrument_name(exs_path)
+        bundle_dir = out_root / f"{instr_name}.dsbundle"
+        samples_dir = bundle_dir / 'Samples'
+        preset_path = bundle_dir / f"{instr_name}.dspreset"
+
+        info("Indexing samples in input folder...")
+        sample_index = find_samples_in_folder(in_dir)
+        zones: List[Zone] = []
+        try:
+            info(f"Parsing EXS: {exs_path}")
+            exs = load_exs(exs_path)
+            info("Extracting zones from EXS...")
+            zones = parse_zones(exs, in_dir, sample_index)
+        except Exception as ex:
+            warn(f"EXS parse failed ({ex}). Trying SFZ fallback...")
+            # Try to find SFZ in same folder
+            sfz_path = None
+            for p in exs_path.parent.glob('*.sfz'):
+                sfz_path = p
+                break
+            if sfz_path:
+                info(f"Parsing SFZ: {sfz_path}")
+                zones = parse_sfz(sfz_path, exs_path.parent, sample_index)
+            else:
+                warn("No .sfz found; deriving mapping from filenames and AIFF loop markers…")
+                # First try local folder inference
+                zones = derive_zones_from_folder(in_dir)
+                # If nothing resolved and a samples-root was provided, try a recursive search
+                if not zones and args.samples_root:
+                    sr = Path(args.samples_root).expanduser().resolve()
+                    if sr.is_dir():
+                        info(f"Searching samples recursively under: {sr}")
+                        zones = derive_zones_from_samples_root(sr, guess_instrument_name(exs_path))
+                    else:
+                        warn(f"samples-root not found: {sr}")
+        if not zones:
+            print("No zones resolved; nothing to convert.", file=sys.stderr)
+            return 3
+
+        info(f"Preparing DecentSampler bundle at: {bundle_dir}")
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+
+        # Optional: apply default crossfade to zones missing one
+        if (args.xfade_samples is not None or args.xfade_ms is not None) and zones:
+            applied = 0
+            for z in zones:
+                if z.loop_start is not None and z.loop_end is not None and (z.loop_xfade is None or z.loop_xfade <= 0):
+                    if args.xfade_samples is not None:
+                        z.loop_xfade = max(0, int(args.xfade_samples))
+                    else:
+                        sr = get_sample_rate(z.sample_path)
+                        z.loop_xfade = max(0, int(round((args.xfade_ms or 0.0) * sr / 1000.0)))
+                    applied += 1
+            if applied:
+                info(f"Applied default loop crossfade to {applied} zone(s)")
+
+        info("Copying samples...")
+        copy_samples(zones, samples_dir)
+
+        info("Building .dspreset...")
+        root = ds_root()
+        ds_add_metadata(root, instr_name)
+        ds_add_groups(root, zones, samples_subdir='Samples')
+        # Add effects with IDs so UI knobs can bind reliably.
+        ds_add_all_effects(root)
+
+        # Generate a simple gradient background (always), themed if requested
+        theme = (args.theme or 'dark')
+        bg_rel: Optional[str] = None
+        try:
+            bg_rel = generate_background(bundle_dir, instr_name, theme, args.bg_width, args.bg_height)
+            if bg_rel:
+                info(f"Background generated: {bg_rel}")
+        except Exception as e:
+            warn(f"Background generation failed: {e}")
+
+        # Add UI
+        if args.full_ui:
+            ds_add_full_ui(root, title=instr_name, theme=theme, bg_rel_path=bg_rel, bg_w=args.bg_width, bg_h=args.bg_height)
+        elif args.force_ui:
+            ds_add_basic_ui(root)
+        write_preset(root, preset_path)
+
+        info("Done.")
+        info(f"Bundle: {bundle_dir}")
+        info(f"Preset: {preset_path}")
+        return 0
+
+    # Batch mode: convert all .exs in folder
+    if args.batch:
+        if args.exs:
+            warn("--batch specified; ignoring --exs and converting all .exs in folder.")
+        exs_files = sorted(in_dir.glob('*.exs'))
+        if not exs_files:
+            print("No .exs files found in folder for batch conversion.", file=sys.stderr)
+            return 2
+        total = len(exs_files)
+        ok = 0
+        for idx, exs_path in enumerate(exs_files, start=1):
+            info(f"=== [{idx}/{total}] Converting: {exs_path.name} ===")
+            rc = convert_one(exs_path.resolve())
+            if rc == 0:
+                ok += 1
+            else:
+                warn(f"Conversion failed for: {exs_path.name} (exit {rc})")
+        info(f"Batch completed: {ok}/{total} succeeded")
+        return 0 if ok == total else 1
+
+    # Single conversion path (original behavior)
     exs_path: Optional[Path] = None
     if args.exs:
         exs_path = Path(args.exs).expanduser().resolve()
@@ -1080,97 +1216,7 @@ def main() -> int:
             print("No .exs file found in folder. Use --exs to specify one.", file=sys.stderr)
             return 2
 
-    # Determine base output root. Default to current working directory
-    # inside a folder named "Decent Sampler Bundes" unless --out is provided.
-    base_out = Path(args.out).expanduser().resolve() if args.out else (Path.cwd() / 'Decent Sampler Bundes')
-    out_root = base_out
-    instr_name = guess_instrument_name(exs_path)
-    bundle_dir = out_root / f"{instr_name}.dsbundle"
-    samples_dir = bundle_dir / 'Samples'
-    preset_path = bundle_dir / f"{instr_name}.dspreset"
-
-    info("Indexing samples in input folder...")
-    sample_index = find_samples_in_folder(in_dir)
-    zones: List[Zone] = []
-    try:
-        info(f"Parsing EXS: {exs_path}")
-        exs = load_exs(exs_path)
-        info("Extracting zones from EXS...")
-        zones = parse_zones(exs, in_dir, sample_index)
-    except Exception as ex:
-        warn(f"EXS parse failed ({ex}). Trying SFZ fallback...")
-        # Try to find SFZ in same folder
-        sfz_path = None
-        for p in exs_path.parent.glob('*.sfz'):
-            sfz_path = p
-            break
-        if sfz_path:
-            info(f"Parsing SFZ: {sfz_path}")
-            zones = parse_sfz(sfz_path, exs_path.parent, sample_index)
-        else:
-            warn("No .sfz found; deriving mapping from filenames and AIFF loop markers…")
-            # First try local folder inference
-            zones = derive_zones_from_folder(in_dir)
-            # If nothing resolved and a samples-root was provided, try a recursive search
-            if not zones and args.samples_root:
-                sr = Path(args.samples_root).expanduser().resolve()
-                if sr.is_dir():
-                    info(f"Searching samples recursively under: {sr}")
-                    zones = derive_zones_from_samples_root(sr, guess_instrument_name(exs_path))
-                else:
-                    warn(f"samples-root not found: {sr}")
-    if not zones:
-        print("No zones resolved; nothing to convert.", file=sys.stderr)
-        return 3
-
-    info(f"Preparing DecentSampler bundle at: {bundle_dir}")
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-
-    # Optional: apply default crossfade to zones missing one
-    if (args.xfade_samples is not None or args.xfade_ms is not None) and zones:
-        applied = 0
-        for z in zones:
-            if z.loop_start is not None and z.loop_end is not None and (z.loop_xfade is None or z.loop_xfade <= 0):
-                if args.xfade_samples is not None:
-                    z.loop_xfade = max(0, int(args.xfade_samples))
-                else:
-                    sr = get_sample_rate(z.sample_path)
-                    z.loop_xfade = max(0, int(round((args.xfade_ms or 0.0) * sr / 1000.0)))
-                applied += 1
-        if applied:
-            info(f"Applied default loop crossfade to {applied} zone(s)")
-
-    info("Copying samples...")
-    copy_samples(zones, samples_dir)
-
-    info("Building .dspreset...")
-    root = ds_root()
-    ds_add_metadata(root, instr_name)
-    ds_add_groups(root, zones, samples_subdir='Samples')
-    # Add effects with IDs so UI knobs can bind reliably.
-    ds_add_all_effects(root)
-
-    # Generate a simple gradient background (always), themed if requested
-    theme = (args.theme or 'dark')
-    bg_rel: Optional[str] = None
-    try:
-        bg_rel = generate_background(bundle_dir, instr_name, theme, args.bg_width, args.bg_height)
-        if bg_rel:
-            info(f"Background generated: {bg_rel}")
-    except Exception as e:
-        warn(f"Background generation failed: {e}")
-
-    # Add UI
-    if args.full_ui:
-        ds_add_full_ui(root, title=instr_name, theme=theme, bg_rel_path=bg_rel, bg_w=args.bg_width, bg_h=args.bg_height)
-    elif args.force_ui:
-        ds_add_basic_ui(root)
-    write_preset(root, preset_path)
-
-    info("Done.")
-    info(f"Bundle: {bundle_dir}")
-    info(f"Preset: {preset_path}")
-    return 0
+    return convert_one(exs_path)
 
 
 if __name__ == '__main__':

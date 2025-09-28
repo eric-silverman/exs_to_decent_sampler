@@ -20,8 +20,19 @@ This script parses EXS instruments (XML or binary plist), copies referenced samp
 
 ## Requirements
 
-- Python 3.8+ (standard library only; no external dependencies)
+- Python 3.8+
 - A folder containing a `.exs` instrument and its samples
+- Optional: Pillow (Python Imaging Library) to generate a background image for the UI. If Pillow is not installed, the conversion still works; the script simply skips background generation.
+
+### Install Pillow (optional)
+
+If you want the generated DecentSampler bundle to include a simple gradient background image, install Pillow:
+
+- macOS/Linux (user install): `python3 -m pip install --user pillow`
+- macOS/Linux (virtualenv): `pip install pillow`
+- Windows (user install): `py -m pip install --user pillow`
+
+You can verify installation in a Python shell with: `import PIL; import PIL.Image`
 
 ## Usage
 
@@ -41,6 +52,12 @@ Specify a particular `.exs` file (when the folder has multiple or none at top le
 
 ```
 python3 exs_to_decent_sampler.py /path/to/EXS_folder --exs /path/to/instrument.exs
+```
+
+Batch convert all `.exs` files in a folder:
+
+```
+python3 exs_to_decent_sampler.py /path/to/EXS_folder --batch
 ```
 
 Ensure a minimal or full custom UI is included in the preset:
@@ -72,8 +89,10 @@ python3 exs_to_decent_sampler.py /path/to/EXS_folder --xfade-ms 20
 ### Command line options
 
 - `input_folder` (positional): Folder containing the `.exs` file and samples.
+- `--check-deps`: Check optional dependencies (e.g., Pillow) and exit.
 - `--out <path>`: Output folder root. Default is `<CWD>/Decent Sampler Bundes`. Results are placed directly under `<out>`.
 - `--exs <path>`: Specific `.exs` file to convert (optional).
+- `--batch`: Convert all `.exs` files in the input folder (non-recursive). Ignores `--exs` if provided.
 - `--force-ui`: Add a minimal `<ui>` block explicitly.
 - `--full-ui`: Add a full UI with knobs bound to ADSR, Gain, and Tone.
 - `--samples-root <path>`: Optional root to search recursively for samples when direct resolution fails.
@@ -112,6 +131,7 @@ If duplicate sample basenames occur, files are de-duplicated and suffixed (`_2`,
 - “Zone N: could not resolve sample path”: Ensure samples are present; try `--samples-root` to search more broadly.
 - “No zones resolved; nothing to convert.”: The source format may be unusual or filenames don’t follow the expected pattern. Try placing an `.sfz` alongside the `.exs`, or use filename conventions like `Instrument-C3-V95-…`.
 - Loops not crossfading as expected: Use `--xfade-samples` or `--xfade-ms`.
+- “Pillow not installed; skipping gradient background generation.”: This is harmless. If you want a background image in the UI, install Pillow using one of the commands above and rerun.
 
 ## Example
 
@@ -127,6 +147,14 @@ python3 exs_to_decent_sampler.py "~/Logic/EXS/GrandPiano" \
 #   ~/Instruments/GrandPiano.dsbundle/
 #         ├─ GrandPiano.dspreset
 #         └─ Samples/…
+```
+
+### Quick dependency check
+
+To verify optional packages are available (currently checks Pillow):
+
+```
+python3 exs_to_decent_sampler.py --check-deps
 ```
 
 ## License
