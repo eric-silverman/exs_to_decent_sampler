@@ -1175,9 +1175,32 @@ def main() -> int:
             ds_add_basic_ui(root)
         write_preset(root, preset_path)
 
+        # Package the bundle as a .dslibrary (zip archive with renamed extension)
+        try:
+            zip_base = base_out / instr_name
+            # Create a zip containing the top-level bundle directory
+            archive_path = shutil.make_archive(str(zip_base), 'zip', root_dir=base_out, base_dir=bundle_dir.name)
+            dslib_path = base_out / f"{instr_name}.dslibrary"
+            # Replace existing .dslibrary if present
+            try:
+                if dslib_path.exists():
+                    dslib_path.unlink()
+            except Exception:
+                pass
+            os.replace(archive_path, dslib_path)
+            info(f"Packaged library: {dslib_path}")
+            # Remove the bundle folder after successful packaging
+            try:
+                shutil.rmtree(bundle_dir)
+                info(f"Removed bundle folder: {bundle_dir}")
+            except Exception as re:
+                warn(f"Failed to remove bundle folder: {re}")
+        except Exception as e:
+            warn(f"Packaging to .dslibrary failed: {e}")
+
         info("Done.")
-        info(f"Bundle: {bundle_dir}")
-        info(f"Preset: {preset_path}")
+        info(f"Bundle folder: {bundle_dir}")
+        info(f"Preset file: {preset_path}")
         return 0
 
     # Batch mode: convert all .exs in folder
